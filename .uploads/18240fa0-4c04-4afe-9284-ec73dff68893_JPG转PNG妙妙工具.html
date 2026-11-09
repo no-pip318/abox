@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f7f7fb">
+<title>妙妙工具｜JPG 转 PNG</title>
+<style>
+:root{color-scheme:light;--bg:#f5f6fa;--card:#fff;--ink:#242638;--muted:#74788a;--line:#e7e8ef;--accent:#6257d9;--soft:#f0efff;--good:#16865b;--warn:#b66a12}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:650px;margin:auto;padding:20px 15px 40px}.hero{padding:8px 2px 18px}.eyebrow{font-size:12px;color:var(--accent);font-weight:700;letter-spacing:.08em}.hero h1{font-size:25px;margin:5px 0}.hero p{color:var(--muted);margin:0;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:17px;margin:12px 0;box-shadow:0 4px 18px #24263808}
+.card h2{font-size:16px;margin:0 0 13px}.drop{display:flex;min-height:142px;border:2px dashed #c9c6f3;border-radius:14px;background:#faf9ff;align-items:center;justify-content:center;text-align:center;padding:18px;cursor:pointer}
+.drop strong{display:block;font-size:15px}.drop small{display:block;color:var(--muted);margin-top:5px}.drop .emoji{font-size:30px;margin-bottom:5px}
+input[type=file]{position:absolute;width:1px;height:1px;opacity:0}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:13px}.stat{background:#f7f7fb;border-radius:12px;padding:10px}.stat span{display:block;color:var(--muted);font-size:11px}.stat b{font-size:20px}
+.progress{height:7px;border-radius:9px;background:#ececf2;overflow:hidden;margin-top:13px}.progress div{height:100%;width:0;background:var(--accent);transition:width .2s}
+.status{font-size:12px;color:var(--muted);margin-top:9px;overflow-wrap:anywhere}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}button{border:0;border-radius:12px;padding:13px 10px;font-weight:700;font-size:14px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:var(--accent);color:white}.secondary{background:#f0efff;color:#5147c5}.ghost{background:#fff;border:1px solid var(--line);color:var(--ink)}
+.filelist{max-height:230px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px 11px;font-size:12px;color:var(--muted)}
+.file{display:flex;justify-content:space-between;gap:8px;padding:5px 0;border-bottom:1px solid #f0f0f4}.file:last-child{border:0}.file span:first-child{overflow-wrap:anywhere;color:var(--ink)}
+.note{font-size:12px;color:var(--muted);background:#f7f7fb;border-radius:12px;padding:11px}.ok{color:var(--good)}.warning{color:var(--warn)}
+footer{text-align:center;color:var(--muted);font-size:11px;padding:12px}
+</style>
+</head>
+<body>
+<main>
+ <header class="hero"><div class="eyebrow">MIAOMIAO TOOLBOX</div><h1>JPG 批量转 PNG</h1><p>选图 → 本地转换 → ZIP 打包，一次完成。</p></header>
+ <section class="card">
+  <h2>① 导入图片</h2>
+  <label class="drop" for="picker"><span><span class="emoji">🖼️</span><strong>点击选择 JPG 图片</strong><small>支持多选，也可一次选中全部 121 张</small></span></label>
+  <input id="picker" type="file" accept="image/jpeg,.jpg,.jpeg" multiple>
+  <div class="stats">
+   <div class="stat"><span>已选图片</span><b id="count">0</b></div>
+   <div class="stat"><span>转换完成</span><b id="done">0</b></div>
+   <div class="stat"><span>缺少序号</span><b id="missing">121</b></div>
+  </div>
+  <div class="progress"><div id="bar"></div></div><div class="status" id="status">等待导入。预期文件名为 0001.jpg 至 0121.jpg。</div>
+ </section>
+ <section class="card">
+  <h2>② 文件检查</h2>
+  <div id="filelist" class="filelist">尚未选择文件</div>
+  <div class="actions"><button class="ghost" id="clear">清空列表</button><button class="secondary" id="check">检查序列</button></div>
+ </section>
+ <section class="card">
+  <h2>③ 转换并打包</h2>
+  <div class="note">输出文件名保持数字不变：<b>0001.jpg → 0001.png</b>。ZIP 内直接放置 PNG，不额外套文件夹。转换在本机浏览器内完成，图片不会上传。</div>
+  <div class="actions"><button class="primary" id="convert">转换并生成 ZIP</button><button class="secondary" id="download" disabled>下载 ZIP</button></div>
+  <div class="status" id="result">尚未开始转换</div>
+ </section>
+ <footer>建议使用最新版 Chrome。转换时保持页面打开；超大图片可能占用较多手机内存。</footer>
+</main>
+<script>
+(()=>{
+const $=id=>document.getElementById(id);let files=[],zipBlob=null,busy=false;
+const crcTable=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
+function crc32(bytes){let c=0xffffffff;for(let i=0;i<bytes.length;i++)c=crcTable[(c^bytes[i])&255]^(c>>>8);return (c^0xffffffff)>>>0;}
+function u16(n){return [n&255,(n>>>8)&255];}
+function u32(n){return [n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255];}
+function makeZip(entries){
+ const enc=new TextEncoder(),local=[],central=[];let offset=0;
+ for(const entry of entries){
+  const name=enc.encode(entry.name),data=entry.data,crc=crc32(data);
+  const lh=new Uint8Array([0x50,0x4b,3,4,...u16(20),...u16(0x0800),...u16(0),...u16(0x0021),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0)]);
+  local.push(lh,name,data);
+  const ch=new Uint8Array([0x50,0x4b,1,2,...u16(20),...u16(20),...u16(0x0800),...u16(0),...u16(0x0021),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(offset)]);
+  central.push(ch,name);offset+=lh.length+name.length+data.length;
+ }
+ const centralSize=central.reduce((n,a)=>n+a.length,0);
+ const end=new Uint8Array([0x50,0x4b,5,6,...u16(0),...u16(0),...u16(entries.length),...u16(entries.length),...u32(centralSize),...u32(offset),...u16(0)]);
+ return new Blob([...local,...central,end],{type:'application/zip'});
+}
+const expected=Array.from({length:121},(_,i)=>String(i+1).padStart(4,'0'));
+function setStatus(s,cls=''){ $('status').className='status '+cls;$('status').textContent=s; }
+function refresh(){
+ files.sort((a,b)=>a.name.localeCompare(b.name,undefined,{numeric:true}));
+ $('count').textContent=files.length;$('done').textContent='0';zipBlob=null;$('download').disabled=true;
+ const names=new Set(files.map(f=>f.name.toLowerCase()));
+ const missing=expected.filter(n=>!names.has(n+'.jpg')&&!names.has(n+'.jpeg'));
+ $('missing').textContent=missing.length;
+ $('bar').style.width=(Math.min(100,files.length/121*100))+'%';
+ $('filelist').replaceChildren();
+ if(!files.length){$('filelist').textContent='尚未选择文件';setStatus('等待导入。预期文件名为 0001.jpg 至 0121.jpg。');return;}
+ const dup=new Set();const seen=new Set();
+ files.forEach(f=>{let stem=f.name.replace(/\.(jpe?g)$/i,'').toLowerCase();if(seen.has(stem))dup.add(stem);seen.add(stem);
+ const row=document.createElement('div');row.className='file';const n=document.createElement('span');n.textContent=f.name;const s=document.createElement('span');s.textContent=(f.size/1048576).toFixed(2)+' MB';row.append(n,s);$('filelist').append(row);});
+ if(dup.size)setStatus('发现重复文件名（不区分大小写）：'+[...dup].join(', '),'warning');
+ else if(files.length===121&&missing.length===0)setStatus('✓ 121 张图片齐全，序列检查通过。','ok');
+ else setStatus(`已导入 ${files.length} 张；缺少 ${missing.length} 个预期序号。`);
+}
+$('picker').addEventListener('change',e=>{if(busy)return;const selected=[...e.target.files];const bad=selected.filter(f=>!(/\.(jpe?g)$/i.test(f.name)));files=selected.filter(f=>/\.(jpe?g)$/i.test(f.name));refresh();if(bad.length)setStatus(`已忽略 ${bad.length} 个非 JPG 文件。`,'warning');e.target.value='';});
+$('clear').onclick=()=>{if(busy)return;files=[];refresh();$('result').textContent='已清空';};
+$('check').onclick=()=>{refresh();};
+async function toPng(file){
+ const bitmap=await createImageBitmap(file);
+ try{
+  const canvas=document.createElement('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;
+  const ctx=canvas.getContext('2d');ctx.drawImage(bitmap,0,0);
+  const blob=await new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('浏览器 PNG 编码失败')),'image/png'));
+  return blob;
+ }finally{bitmap.close();}
+}
+$('convert').onclick=async()=>{
+ if(busy)return;if(!files.length){$('result').textContent='请先导入 JPG 图片。';return;}
+ 
+ const stems=files.map(f=>f.name.replace(/\.(jpe?g)$/i,'').toLowerCase());
+ if(new Set(stems).size!==stems.length){$('result').textContent='文件名重复，无法安全打包。请检查后重新导入。';return;}
+ busy=true;$('convert').disabled=true;$('clear').disabled=true;$('picker').disabled=true;$('download').disabled=true;
+ const entries=[];let done=0;
+ try{
+  for(const f of files){
+   $('result').textContent=`正在转换 ${done+1}/${files.length}：${f.name}`;
+   const png=await toPng(f);const out=f.name.replace(/\.(jpe?g)$/i,'.png');entries.push({name:out,data:new Uint8Array(await png.arrayBuffer())});
+   done++;$('done').textContent=done;$('bar').style.width=(done/files.length*100)+'%';
+   await new Promise(r=>setTimeout(r,0));
+  }
+  $('result').textContent='PNG 已生成，正在压缩 ZIP…';
+  $('result').textContent='正在组装 ZIP 压缩包…';
+  zipBlob=makeZip(entries);
+  $('download').disabled=false;$('result').textContent=`✓ 完成：${done} 张 PNG，ZIP 大小 ${(zipBlob.size/1048576).toFixed(2)} MB。`;
+ }catch(err){$('result').textContent='处理失败：'+(err&&err.message?err.message:String(err));}
+ finally{busy=false;$('convert').disabled=false;$('clear').disabled=false;$('picker').disabled=false;}
+};
+$('download').onclick=()=>{
+ if(!zipBlob)return;const url=URL.createObjectURL(zipBlob);const a=document.createElement('a');a.href=url;a.download='PNG_Images_0001-0121.zip';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),120000);
+};
+})();
+</script>
+</body></html>
