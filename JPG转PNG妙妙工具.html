@@ -55,20 +55,67 @@ footer{text-align:center;color:var(--muted);font-size:11px;padding:12px}
 const $=id=>document.getElementById(id);let files=[],zipBlob=null,busy=false;
 const crcTable=(()=>{const t=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xedb88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
 function crc32(bytes){let c=0xffffffff;for(let i=0;i<bytes.length;i++)c=crcTable[(c^bytes[i])&255]^(c>>>8);return (c^0xffffffff)>>>0;}
-function u16(n){return [n&255,(n>>>8)&255];}
-function u32(n){return [n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255];}
-function makeZip(entries){
- const enc=new TextEncoder(),local=[],central=[];let offset=0;
+const ZIP64_LIMIT=0xffffffff,EMPTY=new Uint8Array(0),enc=new TextEncoder();
+function dosDateTime(d){
+ const t=(((d.getHours()<<11)|(d.getMinutes()<<5)|(d.getSeconds()>>>1))&0xffff);
+ const dt=((((d.getFullYear()-1980)<<9)|((d.getMonth()+1)<<5)|d.getDate())&0xffff);
+ return [t,dt];
+}
+class ZipWriter{
+ constructor(){this.a=[];}
+ u16(n){this.a.push(n&255,(n>>>8)&255);return this;}
+ u32(n){this.a.push(n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255);return this;}
+ u64(n){this.u32(n>>>0);this.u32(Math.floor(n/4294967296));return this;}
+ out(){return new Uint8Array(this.a);}
+}
+async function makeZip(entries){
+ const [dosTime,dosDate]=dosDateTime(new Date());
+ const metas=[];
  for(const entry of entries){
-  const name=enc.encode(entry.name),data=entry.data,crc=crc32(data);
-  const lh=new Uint8Array([0x50,0x4b,3,4,...u16(20),...u16(0x0800),...u16(0),...u16(0x0021),...u16(0x5221),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0)]);
-  local.push(lh,name,data);
-  const ch=new Uint8Array([0x50,0x4b,1,2,...u16(20),...u16(20),...u16(0x0800),...u16(0),...u16(0x0021),...u16(0x5221),...u32(crc),...u32(data.length),...u32(data.length),...u16(name.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(offset)]);
-  central.push(ch,name);offset+=lh.length+name.length+data.length;
+  const data=new Uint8Array(await entry.blob.arrayBuffer());
+  metas.push({nameBytes:enc.encode(entry.name),blob:entry.blob,size:data.length,crc:crc32(data),offset:0});
  }
- const centralSize=central.reduce((n,a)=>n+a.length,0);
- const end=new Uint8Array([0x50,0x4b,5,6,...u16(0),...u16(0),...u16(entries.length),...u16(entries.length),...u32(centralSize),...u32(offset),...u16(0)]);
- return new Blob([...local,...central,end],{type:'application/zip'});
+ const totalData=metas.reduce((n,m)=>n+m.size,0);
+ const zip64=metas.length>0xffff||metas.some(m=>m.size>=ZIP64_LIMIT)||totalData+metas.length*300>=ZIP64_LIMIT;
+ const version=zip64?45:20;
+ const localParts=[];let offset=0;
+ for(const m of metas){
+  m.offset=offset;
+  const extra=zip64?new ZipWriter().u16(1).u16(16).u64(m.size).u64(m.size).out():EMPTY;
+  const w=new ZipWriter().u32(0x04034b50).u16(version).u16(0x0800).u16(0).u16(dosTime).u16(dosDate).u32(m.crc);
+  if(zip64)w.u32(0xffffffff).u32(0xffffffff);else w.u32(m.size).u32(m.size);
+  w.u16(m.nameBytes.length).u16(extra.length);
+  const lh=w.out();
+  localParts.push(lh,m.nameBytes,extra,m.blob);
+  offset+=lh.length+m.nameBytes.length+extra.length+m.size;
+ }
+ const centralParts=[];let centralSize=0;
+ for(const m of metas){
+  const extra=zip64?new ZipWriter().u16(1).u16(24).u64(m.size).u64(m.size).u64(m.offset).out():EMPTY;
+  const w=new ZipWriter().u32(0x02014b50).u16(version).u16(version).u16(0x0800).u16(0).u16(dosTime).u16(dosDate).u32(m.crc);
+  if(zip64)w.u32(0xffffffff).u32(0xffffffff);else w.u32(m.size).u32(m.size);
+  w.u16(m.nameBytes.length).u16(extra.length).u16(0).u16(0).u16(0).u32(0);
+  if(zip64)w.u32(0xffffffff);else w.u32(m.offset);
+  const ch=w.out();
+  centralParts.push(ch,m.nameBytes,extra);
+  centralSize+=ch.length+m.nameBytes.length+extra.length;
+ }
+ const tailParts=[];
+ if(zip64){
+  tailParts.push(new ZipWriter().u32(0x06064b50).u64(44).u16(version).u16(version).u32(0).u32(0).u64(metas.length).u64(metas.length).u64(centralSize).u64(offset).out());
+  tailParts.push(new ZipWriter().u32(0x07064b50).u32(0).u64(offset+centralSize).u32(1).out());
+  tailParts.push(new ZipWriter().u32(0x06054b50).u16(0).u16(0).u16(0xffff).u16(0xffff).u32(0xffffffff).u32(0xffffffff).u16(0).out());
+ }else{
+  tailParts.push(new ZipWriter().u32(0x06054b50).u16(0).u16(0).u16(metas.length).u16(metas.length).u32(centralSize).u32(offset).u16(0).out());
+ }
+ const blob=new Blob([...localParts,...centralParts,...tailParts],{type:'application/zip'});
+ const totalBytes=offset+centralSize+tailParts.reduce((n,p)=>n+p.length,0);
+ if(blob.size!==totalBytes)throw Error(`ZIP 大小校验失败（${blob.size} ≠ ${totalBytes}）`);
+ const tail=new Uint8Array(await blob.slice(blob.size-22).arrayBuffer());
+ const dv=new DataView(tail.buffer);
+ if(dv.getUint32(0,true)!==0x06054b50)throw Error('ZIP 结束记录校验失败，文件可能被截断');
+ if(!zip64&&(dv.getUint16(10,true)!==metas.length||dv.getUint32(12,true)!==centralSize||dv.getUint32(16,true)!==offset))throw Error('ZIP 中央目录校验失败');
+ return blob;
 }
 const expected=Array.from({length:121},(_,i)=>String(i+1).padStart(4,'0'));
 function setStatus(s,cls=''){ $('status').className='status '+cls;$('status').textContent=s; }
@@ -110,14 +157,14 @@ $('convert').onclick=async()=>{
  try{
   for(const f of files){
    $('result').textContent=`正在转换 ${done+1}/${files.length}：${f.name}`;
-   const png=await toPng(f);const out=f.name.replace(/\.(jpe?g)$/i,'.png');entries.push({name:out,data:new Uint8Array(await png.arrayBuffer())});
+   const png=await toPng(f);const out=f.name.replace(/\.(jpe?g)$/i,'.png');entries.push({name:out,blob:png});
    done++;$('done').textContent=done;$('bar').style.width=(done/files.length*100)+'%';
    await new Promise(r=>setTimeout(r,0));
   }
-  $('result').textContent='PNG 已生成，正在压缩 ZIP…';
-  $('result').textContent='正在组装 ZIP 压缩包…';
-  zipBlob=makeZip(entries);
-  $('download').disabled=false;$('result').textContent=`✓ 完成：${done} 张 PNG，ZIP 大小 ${(zipBlob.size/1048576).toFixed(2)} MB。`;
+  $('result').textContent='正在校验并组装 ZIP 压缩包…';
+  zipBlob=await makeZip(entries);
+  const mb=zipBlob.size/1048576;
+  $('download').disabled=false;$('result').textContent=`✓ 完成：${done} 张 PNG，ZIP 大小 ${mb.toFixed(2)} MB${zipBlob.size>=2147483648?'（超过 2 GB，建议用 7-Zip / Bandizip 解压）':''}。`;
  }catch(err){$('result').textContent='处理失败：'+(err&&err.message?err.message:String(err));}
  finally{busy=false;$('convert').disabled=false;$('clear').disabled=false;$('picker').disabled=false;}
 };
