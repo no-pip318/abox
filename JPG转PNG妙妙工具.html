@@ -32,11 +32,12 @@ footer{text-align:center;color:var(--muted);font-size:11px;padding:12px}
   <h2>① 导入图片</h2>
   <div class="picks">
    <label class="drop" for="picker"><span><span class="emoji">🖼️</span><strong>从相册 / 图片选择</strong><small>可多选，也可连续点选追加</small></span></label>
-   <div class="drop" id="folderPick" role="button" tabindex="0"><span><span class="emoji">📁</span><strong>从文件管理器选文件夹</strong><small>内部存储目录，含子文件夹</small></span></div>
+   <div class="drop" id="folderPick" role="button" tabindex="0"><span><span class="emoji">📁</span><strong>从文件管理器多选</strong><small>手机走内部存储，可选整个文件夹</small></span></div>
   </div>
-  <p class="hint">安卓相册若仍只能单选，连续点几次会自动累加；桌面 Chrome 可直接选整个文件夹。</p>
+  <p class="hint">相册若限制单选：点右侧用文件管理器勾选多张，或连续点选自动累加。</p>
   <input id="picker" type="file" accept="image/*" multiple>
   <input id="folder" type="file" webkitdirectory directory multiple>
+  <input id="files" type="file" multiple>
   <div class="stats">
    <div class="stat"><span>已选图片</span><b id="count">0</b></div>
    <div class="stat"><span>转换完成</span><b id="done">0</b></div>
@@ -144,16 +145,19 @@ function refresh(){
 }
 $('picker').addEventListener('change',e=>{if(busy)return;importFiles(e.target.files,'append');e.target.value='';});
 $('folder').addEventListener('change',e=>{if(busy)return;importFiles(e.target.files,'append');e.target.value='';});
+$('files').addEventListener('change',e=>{if(busy)return;importFiles(e.target.files,'append');e.target.value='';});
+const isMobile=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 $('folderPick').addEventListener('click',async()=>{
  if(busy)return;
- if(!window.showDirectoryPicker){$('folder').click();return;}
- try{
-  const dir=await window.showDirectoryPicker({mode:'read'});
-  const picked=[];await walkDir(dir,picked);importFiles(picked,'append');
- }catch(err){
-  if(err&&err.name==='AbortError')return;
-  $('folder').click();
+ if(!isMobile&&window.showDirectoryPicker){
+  try{
+   const dir=await window.showDirectoryPicker({mode:'read'});
+   const picked=[];await walkDir(dir,picked);importFiles(picked,'append');return;
+  }catch(err){
+   if(err&&err.name==='AbortError')return;
+  }
  }
+ (isMobile?$('files'):$('folder')).click();
 });
 $('folderPick').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();$('folderPick').click();}});
 async function walkDir(handle,out){
